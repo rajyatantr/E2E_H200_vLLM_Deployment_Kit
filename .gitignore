@@ -1,0 +1,42 @@
+# Models & weights (too large for git)
+models/
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.pth
+
+# Adapters & training outputs
+adapters/
+training_outputs/
+checkpoints/
+wandb/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment & secrets
+.env
+*.secret
+token.txt
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

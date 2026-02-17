@@ -1,0 +1,11 @@
+.git
+models/
+adapters/
+training_outputs/
+*.safetensors
+*.bin
+*.pt
+*.log
+__pycache__/
+.venv/
+.env
