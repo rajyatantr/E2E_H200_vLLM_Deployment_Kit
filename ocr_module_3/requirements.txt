@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+python-multipart
+jinja2
+
+# vLLM (replaces transformers for inference)
+vllm>=0.8.5
+
+# OlmOCR utilities (PDF rendering + prompts only)
+olmocr
+
+# Other
+pillow
+PyPDF2
+aiosqlite==0.19.0
+huggingface-hub
+pyyaml

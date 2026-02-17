@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Extraction Dashboard (VLM)</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f7fa;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #1a202c;
+            margin-bottom: 30px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 28px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #657786;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: white;
+            border: 1px solid #e1e8ed;
+            color: #333;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .stat-card h3 { 
+            font-size: 13px; 
+            margin-bottom: 10px; 
+            color: #657786; 
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .stat-card .value { font-size: 32px; font-weight: 600; color: #2c5282; }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        input, button, select {
+            padding: 12px 20px;
+            border: 1px solid #e1e8ed;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        input {
+            flex: 1;
+            min-width: 200px;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #2c5282;
+        }
+        button {
+            background: #2c5282;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: 0.2s;
+            font-weight: 500;
+        }
+        button:hover { background: #1a365d; }
+        button.danger { background: #dc3545; }
+        button.danger:hover { background: #c82333; }
+        .table-container {
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e1e8ed;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #1a202c;
+            font-size: 13px;
+            text-transform: uppercase;
+        }
+        tr:hover { background: #f8f9fa; }
+        .status-success { color: #28a745; font-weight: 600; }
+        .status-failed { color: #dc3545; font-weight: 600; }
+        .content-view {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 6px;
+            max-height: 600px;
+            overflow-y: auto;
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            border: 1px solid #e1e8ed;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.6;
+        }
+        .content-stats {
+            background: #e3f2fd;
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 12px;
+            color: #1565c0;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+        .modal-content {
+            background: white;
+            margin: 30px auto;
+            padding: 30px;
+            max-width: 1200px;
+            border-radius: 8px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal-content h2 {
+            color: #1a202c;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        .modal-content h3 {
+            color: #2c5282;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .modal-content p {
+            margin-bottom: 10px;
+            color: #4a5568;
+        }
+        .close {
+            float: right;
+            font-size: 28px;
+            cursor: pointer;
+            color: #657786;
+        }
+        .close:hover { color: #1a202c; }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #657786;
+        }
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .action-buttons button {
+            font-size: 12px;
+            padding: 8px 16px;
+        }
+        .view-toggle {
+            margin-top: 10px;
+            padding: 5px 0;
+        }
+        .view-toggle label {
+            margin-right: 15px;
+            font-size: 13px;
+            color: #4a5568;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Document Extraction Dashboard (VLM)</h1>
+        <div class="subtitle">Advanced AI-powered document processing with Vision Language Models</div>
+        
+        <div class="stats" id="stats">
+            <div class="stat-card">
+                <h3>Total Documents</h3>
+                <div class="value" id="totalDocs">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>Successful</h3>
+                <div class="value" id="successDocs">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>Failed</h3>
+                <div class="value" id="failedDocs">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>Total Size (MB)</h3>
+                <div class="value" id="totalSize">0</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <input type="text" id="searchInput" placeholder="Search by document name...">
+            <button onclick="searchResults()">Search</button>
+            <button onclick="loadResults()">Refresh</button>
+            <button onclick="resetDatabase()" class="danger">Reset Database</button>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Document Name</th>
+                        <th>Status</th>
+                        <th>Format</th>
+                        <th>Size (KB)</th>
+                        <th>Date</th>
+                        <th>Time</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsBody">
+                    <tr>
+                        <td colspan="8" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="detailModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <div id="modalContent"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentViewMode = 'preview'; // 'preview' or 'full'
+
+        async function loadStatistics() {
+            try {
+                const response = await fetch('/api/statistics');
+                const stats = await response.json();
+                
+                document.getElementById('totalDocs').textContent = stats.total_documents || 0;
+                document.getElementById('successDocs').textContent = stats.successful || 0;
+                document.getElementById('failedDocs').textContent = stats.failed || 0;
+                document.getElementById('totalSize').textContent = (stats.total_file_size_mb || 0).toFixed(2);
+            } catch (error) {
+                console.error('Error loading statistics:', error);
+            }
+        }
+
+        async function loadResults() {
+            try {
+                const response = await fetch('/api/results?limit=100');
+                const data = await response.json();
+                
+                const tbody = document.getElementById('resultsBody');
+                tbody.innerHTML = '';
+                
+                if (!data.results || data.results.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No documents processed yet</td></tr>';
+                    return;
+                }
+                
+                data.results.forEach(result => {
+                    const fileSizeKB = result.file_size ? (result.file_size / 1024).toFixed(2) : 'N/A';
+                    const row = tbody.insertRow();
+                    row.innerHTML = `
+                        <td>${result.id || 'N/A'}</td>
+                        <td>${result.document_name || 'Unknown'}</td>
+                        <td class="status-${result.status}">${result.status || 'Unknown'}</td>
+                        <td>${result.conversion_type || 'N/A'}</td>
+                        <td>${fileSizeKB}</td>
+                        <td>${result.created_date || 'N/A'}</td>
+                        <td>${result.created_time || 'N/A'}</td>
+                        <td>
+                            <button onclick="viewDetails(${result.id})">View</button>
+                            <button onclick="downloadContent(${result.id}, '${result.document_name}')">Download</button>
+                        </td>
+                    `;
+                });
+            } catch (error) {
+                console.error('Error loading results:', error);
+            }
+        }
+
+        async function viewDetails(id) {
+            try {
+                const response = await fetch(`/api/results/${id}`);
+                const result = await response.json();
+                
+                const fileSizeKB = result.file_size ? (result.file_size / 1024).toFixed(2) : 'N/A';
+                const contentLength = result.content ? result.content.length : 0;
+                const contentLines = result.content ? result.content.split('\n').length : 0;
+                
+                // Show full content (no truncation)
+                const displayContent = result.content || 'No content available';
+                
+                const content = `
+                    <h2>${result.document_name || 'Unknown Document'}</h2>
+                    
+                    <div class="content-stats">
+                        Content Stats: ${contentLength.toLocaleString()} characters | 
+                        ${contentLines.toLocaleString()} lines | 
+                        ${fileSizeKB} KB file size
+                    </div>
+                    
+                    <p><strong>Status:</strong> <span class="status-${result.status}">${result.status || 'Unknown'}</span></p>
+                    <p><strong>Conversion Type:</strong> ${result.conversion_type || 'N/A'}</p>
+                    <p><strong>File Size:</strong> ${fileSizeKB} KB</p>
+                    <p><strong>Date/Time:</strong> ${result.created_date || 'N/A'} ${result.created_time || ''}</p>
+                    ${result.error_message ? `<p><strong>Error:</strong> <span style="color: #dc3545;">${result.error_message}</span></p>` : ''}
+                    
+                    <div class="view-toggle">
+                        <label>
+                            <input type="radio" name="viewMode" value="preview" ${currentViewMode === 'preview' ? 'checked' : ''} onchange="toggleViewMode('preview', ${id})">
+                            Preview (First 5000 chars)
+                        </label>
+                        <label>
+                            <input type="radio" name="viewMode" value="full" ${currentViewMode === 'full' ? 'checked' : ''} onchange="toggleViewMode('full', ${id})">
+                            Full Content
+                        </label>
+                    </div>
+                    
+                    <h3>Extracted Content:</h3>
+                    <div class="content-view" id="contentDisplay">
+                        ${currentViewMode === 'preview' ? displayContent.substring(0, 5000) + (displayContent.length > 5000 ? '\n\n... (truncated, switch to Full Content view)' : '') : displayContent}
+                    </div>
+                    
+                    <div class="action-buttons">
+                        <button onclick="copyToClipboard()">Copy to Clipboard</button>
+                        <button onclick="downloadContent(${id}, '${result.document_name}')">Download</button>
+                        <button onclick="closeModal()">Close</button>
+                    </div>
+                `;
+                
+                document.getElementById('modalContent').innerHTML = content;
+                document.getElementById('detailModal').style.display = 'block';
+                
+                // Store full content globally for copy/download
+                window.currentContent = displayContent;
+                window.currentDocName = result.document_name;
+                
+            } catch (error) {
+                console.error('Error loading details:', error);
+                alert('Error loading details: ' + error.message);
+            }
+        }
+
+        function toggleViewMode(mode, id) {
+            currentViewMode = mode;
+            viewDetails(id);
+        }
+
+        function copyToClipboard() {
+            if (!window.currentContent) {
+                alert('No content to copy');
+                return;
+            }
+            
+            navigator.clipboard.writeText(window.currentContent).then(() => {
+                alert('Content copied to clipboard!');
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+                alert('Failed to copy content');
+            });
+        }
+
+        async function downloadContent(id, filename) {
+            try {
+                const response = await fetch(`/api/results/${id}`);
+                const result = await response.json();
+                
+                if (!result.content) {
+                    alert('No content to download');
+                    return;
+                }
+                
+                // Create blob and download
+                const blob = new Blob([result.content], { type: 'text/plain' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${filename}_extracted.txt`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+                alert('Content downloaded!');
+            } catch (error) {
+                console.error('Error downloading:', error);
+                alert('Failed to download content');
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('detailModal').style.display = 'none';
+            window.currentContent = null;
+            window.currentDocName = null;
+        }
+
+        async function searchResults() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) {
+                loadResults();
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const data = await response.json();
+                
+                const tbody = document.getElementById('resultsBody');
+                tbody.innerHTML = '';
+                
+                if (!data.results || data.results.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No results found for "${query}"</td></tr>`;
+                    return;
+                }
+                
+                data.results.forEach(result => {
+                    const fileSizeKB = result.file_size ? (result.file_size / 1024).toFixed(2) : 'N/A';
+                    const row = tbody.insertRow();
+                    row.innerHTML = `
+                        <td>${result.id || 'N/A'}</td>
+                        <td>${result.document_name || 'Unknown'}</td>
+                        <td class="status-${result.status}">${result.status || 'Unknown'}</td>
+                        <td>${result.conversion_type || 'N/A'}</td>
+                        <td>${fileSizeKB}</td>
+                        <td>${result.created_date || 'N/A'}</td>
+                        <td>${result.created_time || 'N/A'}</td>
+                        <td>
+                            <button onclick="viewDetails(${result.id})">View</button>
+                            <button onclick="downloadContent(${result.id}, '${result.document_name}')">Download</button>
+                        </td>
+                    `;
+                });
+            } catch (error) {
+                console.error('Error searching:', error);
+            }
+        }
+
+        async function resetDatabase() {
+            if (!confirm('WARNING: Are you sure you want to reset the database?\n\nThis will delete ALL records permanently!')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/reset-database', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                alert((result.message || 'Database reset successfully'));
+                
+                await loadStatistics();
+                await loadResults();
+            } catch (error) {
+                console.error('Error resetting database:', error);
+                alert('Error resetting database: ' + error.message);
+            }
+        }
+
+        // Initialize
+        window.onload = () => {
+            loadStatistics();
+            loadResults();
+        };
+
+        // Close modal on outside click
+        window.onclick = (event) => {
+            if (event.target == document.getElementById('detailModal')) {
+                closeModal();
+            }
+        };
+
+        // Search on Enter key
+        document.getElementById('searchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchResults();
+        });
+    </script>
+</body>
+</html>

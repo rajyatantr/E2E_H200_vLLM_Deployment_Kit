@@ -1,0 +1,72 @@
+{
+  "document_type": "health_claim",
+  "description": "Health insurance claim form (Part A + Part B)",
+  "required_fields": [
+    "insured_name",
+    "patient_name",
+    "policy_no",
+    "hospital_name",
+    "date_of_admission",
+    "date_of_discharge",
+    "hospitalization_expenses",
+    "total_claimed_amount",
+    "treating_doctor",
+    "primary_diagnosis"
+  ],
+  "optional_fields": [
+    "mobile_no",
+    "email_id",
+    "gender",
+    "age_years",
+    "room_category",
+    "post_hospitalization_expenses",
+    "bank_name",
+    "ifsc_code",
+    "pan",
+    "additional_diagnosis",
+    "type_of_admission",
+    "ip_registration_number",
+    "qualification",
+    "registration_no_with_state_code",
+    "type_of_hospital",
+    "status_at_discharge",
+    "pin_code",
+    "city",
+    "occupation",
+    "relationship_to_primary_insured",
+    "hospitalization_due_to",
+    "medico_legal"
+  ],
+  "field_formats": {
+    "date_of_admission": "DD/MM/YY or DD/MM/YYYY",
+    "date_of_discharge": "DD/MM/YY or DD/MM/YYYY",
+    "hospitalization_expenses": "numeric",
+    "total_claimed_amount": "numeric",
+    "post_hospitalization_expenses": "numeric",
+    "policy_no": "alphanumeric",
+    "pan": "alphanumeric (10 chars)",
+    "mobile_no": "10-digit numeric"
+  },
+  "financial_fields": [
+    "hospitalization_expenses",
+    "post_hospitalization_expenses",
+    "total_claimed_amount"
+  ],
+  "tables": [
+    {
+      "name": "document_checklist",
+      "description": "Y/N/NA checklist of submitted documents",
+      "columns": ["sr_no", "description", "status", "remarks"]
+    },
+    {
+      "name": "bills_enclosed",
+      "description": "Details of bills with amounts",
+      "columns": ["sl_no", "bill_no", "date", "issued_by", "towards", "amount_rs"]
+    },
+    {
+      "name": "claim_docs_checklist",
+      "description": "Claim documents submitted checklist",
+      "columns": ["item", "checked"]
+    }
+  ]
+}

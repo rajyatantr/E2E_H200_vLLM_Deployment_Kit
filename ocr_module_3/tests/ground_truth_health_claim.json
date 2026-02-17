@@ -1,0 +1,188 @@
+{
+  "document_name": "Health Claim form.pdf",
+  "total_pages": 4,
+  "fields": {
+    "page_1_claim_acknowledgment": {
+      "insured_name": "Surya prakash",
+      "patient_name": "Surya prakash",
+      "name_of_corporate": "FIT Services India Private Limited",
+      "mobile_no": "9633155512",
+      "type_of_claim": "Main Hospitalization",
+      "claim_submitted_by": "Surya Prakash",
+      "date_of_claim_submission": "13/12/2023",
+      "claim_submitted_at": "PHS",
+      "email_id": "surya.prafash@dsce.com"
+    },
+    "page_2_claim_form_part_a": {
+      "section_a_primary_insured": {
+        "policy_no": "9000003413040000017",
+        "name": "SURYA PRAKASH",
+        "city": "BANGALORE",
+        "pin_code": "560013",
+        "email_id": "surya.prakash@dsce.com"
+      },
+      "section_c_insured_person": {
+        "name": "SURYA PRAKASH",
+        "gender": "Male",
+        "age_years": "36",
+        "relationship_to_primary_insured": "Self",
+        "occupation": "Self Employed"
+      },
+      "section_d_hospitalization": {
+        "hospital_name": "MEDSTAR SPECIALITY HOSPITAL",
+        "room_category": "Single occupancy",
+        "hospitalization_due_to": "Illness",
+        "date_of_admission": "21/11/23",
+        "date_of_discharge": "24/11/23",
+        "medico_legal": "Yes"
+      },
+      "section_e_details_of_claim": {
+        "hospitalization_expenses": "101150",
+        "post_hospitalization_expenses": "11500"
+      },
+      "section_g_bank_details": {
+        "pan": "AISPP0101A",
+        "bank_name_and_branch": "KARUR BANK",
+        "ifsc_code": "ADFC00433"
+      }
+    },
+    "page_3_declaration": {
+      "date": "20/12/23",
+      "place": "Bangalore"
+    },
+    "page_4_claim_form_part_b": {
+      "section_a_hospital_details": {
+        "hospital_name": "MEDSTAR SPECIALITY HOSPITAL",
+        "treating_doctor": "A ARUN",
+        "qualification": "MBBS",
+        "registration_no_with_state_code": "KMC63431",
+        "type_of_hospital": "Non Network"
+      },
+      "section_b_patient_details": {
+        "ip_registration_number": "OP265214",
+        "gender": "Male",
+        "age_years": "36",
+        "date_of_admission": "21/11/23",
+        "date_of_discharge": "24/11/23",
+        "type_of_admission": "Emergency",
+        "status_at_discharge": "Discharge to home",
+        "total_claimed_amount": "263901"
+      },
+      "section_c_diagnosis": {
+        "primary_diagnosis": "Acute Cholecystitis",
+        "additional_diagnosis": "Tonsillitis"
+      },
+      "hospital_address": {
+        "address": "#641/17/1/3, Kodigehalli Main Road",
+        "area": "Sahakarnagar",
+        "city": "Bangalore",
+        "pin_code": "560092"
+      }
+    }
+  },
+
+  "tables": {
+    "page_1_document_checklist": {
+      "description": "Claim Document Check List - Sr. No, Description, Document Status (Y/N), Remarks",
+      "columns": ["sr_no", "description", "status", "remarks"],
+      "rows": [
+        {"sr_no": "",  "description": "IRDA Claim Form duly signed by the Insured & Hospital", "status": "Y", "remarks": ""},
+        {"sr_no": "",  "description": "Part-A: Duly signed by the insured with Claimed amount, Mobile number & Email ID along with PHS ID", "status": "Y", "remarks": ""},
+        {"sr_no": "1", "description": "Part-B: Duly signed and stamped by hospital", "status": "Y", "remarks": ""},
+        {"sr_no": "",  "description": "Declaration form duly signed & stamped by the hospital in case treatment taken is under PPN/GIPSA hospitals", "status": "", "remarks": ""},
+        {"sr_no": "2", "description": "In case of No Intimation / Delay Intimation & Delay in submission of claim, a letter from insured is required stating reason for the same", "status": "N", "remarks": ""},
+        {"sr_no": "3", "description": "Original Cancelled Cheque Leaf of Employee/Proposer with the Name of the Account Holder Printed on the Cheque Leaf", "status": "NA", "remarks": ""},
+        {"sr_no": "4", "description": "ID Proof of Employee / Primary Insured- Any of one (Passport, Voter ID, Driving License, Or any Government Approved ID). If Claim is above 1 lakh- PAN is mandatory with address Proof", "status": "Y", "remarks": ""},
+        {"sr_no": "5", "description": "ID Proof of Patient- Any of one (Passport, Voter ID, Driving License, Or any Government Approved ID)", "status": "Y", "remarks": ""},
+        {"sr_no": "6", "description": "Original detailed Discharge Summary as per IRDA Format / Day care summary from the hospital (in case of Day Care Treatment) / Death Summary (in Case of Death Claim)", "status": "Y", "remarks": ""},
+        {"sr_no": "6.a", "description": "Copy of the Legal heir certificate (If the claim is for the death of the principle insured)", "status": "NA", "remarks": ""},
+        {"sr_no": "6.b", "description": "Copy of Post Mortem Report & Death Certificate (In Accidental Death cases)", "status": "NA", "remarks": ""},
+        {"sr_no": "7", "description": "Policy Copy (If individual policy)", "status": "NOT APPLICABLE", "remarks": "NOT APPLICABLE"},
+        {"sr_no": "8", "description": "64VB Compliance Certificate (If individual policy)", "status": "NOT APPLICABLE", "remarks": "NOT APPLICABLE"},
+        {"sr_no": "9", "description": "Original Final Hospital bill with cost wise breakup of each item", "status": "Y", "remarks": ""},
+        {"sr_no": "10", "description": "Original Payment Receipt of Main Hospital bill (both Deposit / Refund)", "status": "Y", "remarks": ""},
+        {"sr_no": "10.a", "description": "Receipt Of Payments made at the Hospital by Credit Card: Please attach the Xerox Copy of the Credit Card Payment Slip as received from the Vendor", "status": "", "remarks": ""},
+        {"sr_no": "11", "description": "Original copy of Implant Invoice along with Payment Receipts & Implant Labels / Stickers for Stents/ Mesh/ IOL", "status": "", "remarks": ""},
+        {"sr_no": "12", "description": "Original bills, original Payment Receipts and investigation / Laboratory Reports", "status": "NA", "remarks": ""},
+        {"sr_no": "13", "description": "Original medicine bills specifying Patient Name and date of purchase along with supporting Prescriptions", "status": "Y", "remarks": ""},
+        {"sr_no": "14", "description": "Original copy of First Consultation letter and subsequent Prescriptions", "status": "Y", "remarks": ""},
+        {"sr_no": "15", "description": "Hospital Registration certificate issued by Competent authority as per Indian nursing council Act 1947 (if hospital not falls in GIPSA/PPN)", "status": "", "remarks": ""}
+      ]
+    },
+
+    "page_2_bills_enclosed": {
+      "description": "Details of Bills Enclosed - Sl. No, Bill No, Date, Issued by, Towards, Amount (Rs)",
+      "columns": ["sl_no", "bill_no", "date", "issued_by", "towards", "amount_rs"],
+      "rows": [
+        {"sl_no": "1", "bill_no": "",   "date": "24/11/19",  "issued_by": "", "towards": "Hospital main Bill",           "amount_rs": ""},
+        {"sl_no": "2", "bill_no": "",   "date": "",          "issued_by": "", "towards": "Pre-hospitalization Bills",     "amount_rs": ""},
+        {"sl_no": "3", "bill_no": "",   "date": "30/11/23",  "issued_by": "clrll", "towards": "Post-hospitalization Bills", "amount_rs": ""},
+        {"sl_no": "4", "bill_no": "",   "date": "24/1/23",   "issued_by": "", "towards": "Pharmacy Bills",               "amount_rs": "86407"}
+      ]
+    },
+
+    "page_2_claim_docs_checklist": {
+      "description": "Claim Documents Submitted - Check List (checkboxes)",
+      "columns": ["item", "checked"],
+      "rows": [
+        {"item": "Claim form duly signed", "checked": "Y"},
+        {"item": "Copy of the claim intimation, if any", "checked": ""},
+        {"item": "Hospital Main Bill", "checked": "Y"},
+        {"item": "Hospital Break-up Bill", "checked": "Y"},
+        {"item": "Hospital Bill Payment Receipt", "checked": "Y"},
+        {"item": "Hospital Discharge Summary", "checked": "Y"},
+        {"item": "Pharmacy Bill", "checked": "Y"},
+        {"item": "Operation Theater Notes", "checked": ""},
+        {"item": "ECG", "checked": ""},
+        {"item": "Investigation reports", "checked": "Y"}
+      ]
+    },
+
+    "page_4_claim_docs_checklist": {
+      "description": "Claim Documents Submitted - Check List (Part B)",
+      "columns": ["item", "checked"],
+      "rows": [
+        {"item": "Claim Form duly signed", "checked": "Y"},
+        {"item": "Original Pre-authorization request", "checked": ""},
+        {"item": "Copy of the Pre-authorization approval letter", "checked": ""},
+        {"item": "Copy of Photo ID Card of patient Verified by hospital", "checked": ""},
+        {"item": "Hospital Discharge summary", "checked": ""},
+        {"item": "Operation Theatre Notes", "checked": ""},
+        {"item": "Hospital main bill", "checked": "Y"},
+        {"item": "Hospital break-up bill", "checked": "Y"},
+        {"item": "Investigation reports", "checked": "Y"},
+        {"item": "Pharmacy bills", "checked": "Y"},
+        {"item": "MLC reports & Police FIR", "checked": ""},
+        {"item": "ECG", "checked": ""}
+      ]
+    }
+  },
+
+  "key_handwritten_values": [
+    "Surya prakash",
+    "9633155512",
+    "13/12/2023",
+    "MEDSTAR SPECIALITY HOSPITAL",
+    "21/11/23",
+    "24/11/23",
+    "101150",
+    "AISPP0101A",
+    "MBBS",
+    "KMC63431",
+    "OP265214",
+    "263901",
+    "Acute Cholecystitis",
+    "Bangalore",
+    "86407",
+    "KARUR BANK",
+    "ADFC00433",
+    "A ARUN"
+  ],
+
+  "critical_financial_values": [
+    {"field": "hospitalization_expenses", "value": "101150", "page": 2},
+    {"field": "post_hospitalization_expenses", "value": "11500", "page": 2},
+    {"field": "pharmacy_bill_amount", "value": "86407", "page": 2},
+    {"field": "total_claimed_amount", "value": "263901", "page": 4}
+  ]
+}
