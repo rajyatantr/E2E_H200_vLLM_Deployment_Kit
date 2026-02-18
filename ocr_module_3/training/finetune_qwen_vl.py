@@ -2,29 +2,44 @@
 """
 finetune_qwen_vl.py — Fine-tune Qwen2.5-VL on health claim form data
 
-Uses LoRA (Low-Rank Adaptation) to fine-tune Qwen2.5-VL-7B-Instruct
-on annotated training data from the ADE pipeline.
+Supports both 7B and 72B models using LoRA / QLoRA:
 
-Why 7B for fine-tuning (not 72B):
-  - 7B fits in H200 with full training overhead (~60GB with LoRA)
-  - Fine-tuned 7B often beats un-tuned 72B on specific domains
-  - Much faster training: ~5min per epoch vs hours for 72B
-  - Can always serve the LoRA adapter on top of the 7B base
+  ┌─────────────┬────────────┬─────────────┬──────────────────────┐
+  │ Model       │ Method     │ H200 VRAM   │ Use Case             │
+  ├─────────────┼────────────┼─────────────┼──────────────────────┤
+  │ 7B          │ LoRA       │ ~30 GB      │ Fast experiments     │
+  │ 7B          │ QLoRA      │ ~15 GB      │ Multi-GPU / smaller  │
+  │ 72B         │ QLoRA      │ ~100 GB     │ Best accuracy (H200) │
+  │ 72B         │ LoRA       │ ~280 GB     │ Needs multi-node     │
+  └─────────────┴────────────┴─────────────┴──────────────────────┘
+
+72B QLoRA on H200 (141GB):
+  - Base model in 4-bit NF4 (bitsandbytes): ~38GB
+  - LoRA adapters (r=64, bf16):              ~3GB
+  - Optimizer states (AdamW):                ~6GB
+  - Activations (gradient checkpointing):    ~40-60GB
+  - Total: ~90-110GB → FITS on H200
 
 After fine-tuning:
-  1. Merge LoRA weights: python3 finetune_qwen_vl.py --merge-only
-  2. Serve with vLLM:    bash deploy/start_vllm.sh --model ./training/merged_model --quant null --dtype bfloat16
-  3. Run extraction:     python3 qwen_vl_extract.py --config config.yaml <pdf>
+  1. Merge LoRA:    python3 finetune_qwen_vl.py --merge-only
+  2. Quantize AWQ:  python3 finetune_qwen_vl.py --quantize-awq  (optional, for fast inference)
+  3. Serve:         bash deploy/start_vllm.sh --model ./training/merged_model
 
 Requirements:
   pip install transformers peft accelerate bitsandbytes pillow
 
 Usage:
-  python3 training/finetune_qwen_vl.py                           # Train with defaults
-  python3 training/finetune_qwen_vl.py --config config.yaml      # Use config settings
-  python3 training/finetune_qwen_vl.py --epochs 5 --lr 2e-4      # Override settings
-  python3 training/finetune_qwen_vl.py --merge-only               # Just merge LoRA → full model
-  python3 training/finetune_qwen_vl.py --eval                     # Evaluate on test split
+  # Fine-tune 72B with QLoRA (recommended for H200):
+  python3 training/finetune_qwen_vl.py --base-model Qwen/Qwen2.5-VL-72B-Instruct --method qlora
+
+  # Fine-tune 7B with LoRA (faster, good for experiments):
+  python3 training/finetune_qwen_vl.py --base-model Qwen/Qwen2.5-VL-7B-Instruct --method lora
+
+  # Merge LoRA adapter into full model:
+  python3 training/finetune_qwen_vl.py --merge-only
+
+  # Quantize merged model to AWQ for fast vLLM inference:
+  python3 training/finetune_qwen_vl.py --quantize-awq
 """
 
 import argparse
@@ -56,7 +71,6 @@ def prepare_dataset(data_path, test_split=0.1):
         print("ERROR: No training examples found.")
         sys.exit(1)
 
-    # Shuffle deterministically
     import random
     random.seed(42)
     random.shuffle(examples)
@@ -69,21 +83,49 @@ def prepare_dataset(data_path, test_split=0.1):
     return train, test
 
 
-def setup_model_and_tokenizer(base_model, lora_config, use_qlora=False):
-    """Load base model with LoRA configuration."""
+def estimate_vram(base_model, method, lora_r=64):
+    """Estimate VRAM usage for a given configuration."""
+    is_72b = "72" in base_model.lower()
+    param_b = 72 if is_72b else 7
+
+    if method == "qlora":
+        model_gb = param_b * 0.5  # 4-bit ≈ 0.5 GB per billion params
+        adapter_gb = param_b * 0.04 * (lora_r / 64)  # LoRA in bf16
+        optim_gb = adapter_gb * 2  # AdamW states
+        act_gb = param_b * 0.7  # With gradient checkpointing
+    else:  # lora (bf16 base)
+        model_gb = param_b * 2  # bf16 ≈ 2 GB per billion params
+        adapter_gb = param_b * 0.04 * (lora_r / 64)
+        optim_gb = adapter_gb * 2
+        act_gb = param_b * 0.7
+
+    total = model_gb + adapter_gb + optim_gb + act_gb
+    return {
+        "model_gb": round(model_gb, 1),
+        "adapter_gb": round(adapter_gb, 1),
+        "optimizer_gb": round(optim_gb, 1),
+        "activations_gb": round(act_gb, 1),
+        "total_gb": round(total, 1),
+    }
+
+
+def setup_model_and_tokenizer(base_model, lora_config, method="lora",
+                                gradient_checkpointing=True):
+    """Load base model with LoRA/QLoRA configuration."""
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     import torch
 
+    use_qlora = method == "qlora"
     print(f"  Loading base model: {base_model}")
+    print(f"  Method: {'QLoRA (4-bit NF4 + LoRA)' if use_qlora else 'LoRA (bf16 base)'}")
 
-    # Load processor
     processor = AutoProcessor.from_pretrained(base_model, trust_remote_code=True)
 
-    # Model loading kwargs
     model_kwargs = {
         "trust_remote_code": True,
         "torch_dtype": torch.bfloat16,
+        "device_map": "auto",
     }
 
     if use_qlora:
@@ -94,16 +136,17 @@ def setup_model_and_tokenizer(base_model, lora_config, use_qlora=False):
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
         )
-        model_kwargs["device_map"] = "auto"
-    else:
-        model_kwargs["device_map"] = "auto"
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         base_model, **model_kwargs
     )
 
     if use_qlora:
-        model = prepare_model_for_kbit_training(model)
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=gradient_checkpointing
+        )
+    elif gradient_checkpointing:
+        model.gradient_checkpointing_enable()
 
     # Configure LoRA
     peft_config = LoraConfig(
@@ -119,7 +162,20 @@ def setup_model_and_tokenizer(base_model, lora_config, use_qlora=False):
     )
 
     model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
+
+    trainable, total = 0, 0
+    for _, p in model.named_parameters():
+        total += p.numel()
+        if p.requires_grad:
+            trainable += p.numel()
+    print(f"  Parameters: {total/1e9:.1f}B total, {trainable/1e6:.1f}M trainable "
+          f"({trainable/total*100:.2f}%)")
+
+    # Print actual VRAM usage
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"  GPU VRAM: {allocated:.1f}GB allocated, {reserved:.1f}GB reserved")
 
     return model, processor
 
@@ -127,13 +183,11 @@ def setup_model_and_tokenizer(base_model, lora_config, use_qlora=False):
 def format_example_for_training(example, processor):
     """Convert a training example to model input format."""
     from PIL import Image
-    import torch
 
     messages = example["messages"]
     user_msg = messages[0]
     assistant_msg = messages[1]
 
-    # Extract image path from user message
     image = None
     text_parts = []
     for part in user_msg["content"]:
@@ -144,10 +198,8 @@ def format_example_for_training(example, processor):
             if os.path.exists(img_path):
                 image = Image.open(img_path).convert("RGB")
 
-    # Build the full conversation text
     user_text = "\n".join(text_parts)
 
-    # Use the processor to create inputs
     conversation = [
         {"role": "user", "content": user_text},
         {"role": "assistant", "content": assistant_msg["content"]},
@@ -172,7 +224,7 @@ def format_example_for_training(example, processor):
 
 
 class HealthClaimDataset:
-    """Simple dataset for health claim form training."""
+    """Dataset for health claim form training."""
 
     def __init__(self, examples, processor, max_length=4096):
         self.examples = examples
@@ -187,13 +239,11 @@ class HealthClaimDataset:
 
 
 def train(model, processor, train_data, test_data, training_config, output_dir):
-    """Run LoRA fine-tuning."""
+    """Run LoRA/QLoRA fine-tuning."""
     from transformers import TrainingArguments, Trainer
-    import torch
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Save training data alongside checkpoints for reproducibility
     with open(os.path.join(output_dir, "train_data.json"), "w") as f:
         json.dump(train_data, f, indent=2)
 
@@ -205,13 +255,14 @@ def train(model, processor, train_data, test_data, training_config, output_dir):
         learning_rate=float(training_config.get("learning_rate", 1e-4)),
         warmup_ratio=training_config.get("warmup_ratio", 0.1),
         bf16=training_config.get("bf16", True),
+        gradient_checkpointing=training_config.get("gradient_checkpointing", True),
         logging_steps=1,
         save_strategy="epoch",
         evaluation_strategy="epoch" if test_data else "no",
         save_total_limit=3,
         remove_unused_columns=False,
         dataloader_pin_memory=False,
-        report_to="none",  # Disable wandb etc
+        report_to="none",
     )
 
     train_dataset = HealthClaimDataset(train_data, processor)
@@ -230,11 +281,11 @@ def train(model, processor, train_data, test_data, training_config, output_dir):
     print(f"  Grad accum: {args.gradient_accumulation_steps}")
     print(f"  Effective batch: {args.per_device_train_batch_size * args.gradient_accumulation_steps}")
     print(f"  Learning rate: {args.learning_rate}")
+    print(f"  Gradient checkpointing: {args.gradient_checkpointing}")
     print()
 
     trainer.train()
 
-    # Save LoRA adapter
     adapter_path = os.path.join(output_dir, "lora_adapter")
     model.save_pretrained(adapter_path)
     processor.save_pretrained(adapter_path)
@@ -244,15 +295,35 @@ def train(model, processor, train_data, test_data, training_config, output_dir):
 
 
 def merge_lora(base_model, adapter_path, merged_dir):
-    """Merge LoRA weights into the base model for vLLM serving."""
+    """Merge LoRA weights back into the full-precision base model.
+
+    Note: For 72B, this requires ~145GB RAM (loads full bf16 model).
+    Use a high-RAM machine or add --merge-offload for CPU offloading.
+    """
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
     from peft import PeftModel
     import torch
 
-    print(f"  Loading base model: {base_model}")
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        base_model, torch_dtype=torch.bfloat16, trust_remote_code=True
-    )
+    print(f"  Loading base model (bf16): {base_model}")
+    print(f"  NOTE: 72B merge requires ~145GB RAM. Using CPU offload if needed.")
+
+    # For 72B, try to load with CPU offload to avoid OOM
+    is_72b = "72" in base_model.lower()
+    if is_72b:
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            base_model,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            device_map="cpu",  # Load on CPU for merge
+            low_cpu_mem_usage=True,
+        )
+    else:
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            base_model,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            device_map="auto",
+        )
 
     print(f"  Loading LoRA adapter: {adapter_path}")
     model = PeftModel.from_pretrained(model, adapter_path)
@@ -262,17 +333,53 @@ def merge_lora(base_model, adapter_path, merged_dir):
 
     print(f"  Saving merged model to: {merged_dir}")
     os.makedirs(merged_dir, exist_ok=True)
-    model.save_pretrained(merged_dir)
+    model.save_pretrained(merged_dir, max_shard_size="5GB")
 
-    # Also save processor
     processor = AutoProcessor.from_pretrained(base_model, trust_remote_code=True)
     processor.save_pretrained(merged_dir)
 
     print(f"  Merged model ready!")
-    print(f"\n  To serve with vLLM:")
-    print(f"    bash deploy/start_vllm.sh --model {merged_dir} --quant null --dtype bfloat16")
-
     return merged_dir
+
+
+def quantize_awq(merged_dir, awq_output_dir):
+    """Quantize merged model to AWQ format for fast vLLM inference.
+
+    Requires: pip install autoawq
+    """
+    print(f"\n  Quantizing to AWQ format...")
+    print(f"  Input:  {merged_dir}")
+    print(f"  Output: {awq_output_dir}")
+
+    try:
+        from awq import AutoAWQForCausalLM
+        from transformers import AutoProcessor
+    except ImportError:
+        print("ERROR: autoawq not installed. Run: pip install autoawq")
+        sys.exit(1)
+
+    model = AutoAWQForCausalLM.from_pretrained(merged_dir, trust_remote_code=True)
+    processor = AutoProcessor.from_pretrained(merged_dir, trust_remote_code=True)
+
+    quant_config = {
+        "zero_point": True,
+        "q_group_size": 128,
+        "w_bit": 4,
+        "version": "GEMM",
+    }
+
+    print(f"  Quantizing (this takes 30-60 minutes for 72B)...")
+    model.quantize(processor.tokenizer, quant_config=quant_config)
+
+    os.makedirs(awq_output_dir, exist_ok=True)
+    model.save_quantized(awq_output_dir)
+    processor.save_pretrained(awq_output_dir)
+
+    print(f"  AWQ model saved to: {awq_output_dir}")
+    print(f"\n  To serve with vLLM:")
+    print(f"    bash deploy/start_vllm.sh --model {awq_output_dir} --quant awq_marlin --dtype float16")
+
+    return awq_output_dir
 
 
 def main():
@@ -281,43 +388,61 @@ def main():
     parser.add_argument("--data", default=None,
                         help="Training data JSON (from export_finetune.py)")
     parser.add_argument("--base-model", default=None,
-                        help="Base model (default: Qwen/Qwen2.5-VL-7B-Instruct)")
+                        help="Base model (default from config.yaml)")
     parser.add_argument("--method", choices=["lora", "qlora"], default=None,
-                        help="Fine-tuning method")
+                        help="Fine-tuning method (qlora recommended for 72B)")
     parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--lr", type=float, default=None,
-                        help="Learning rate")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
+    parser.add_argument("--lora-r", type=int, default=None,
+                        help="LoRA rank (default: 64)")
     parser.add_argument("--output-dir", default=None,
                         help="Checkpoint output directory")
     parser.add_argument("--merged-dir", default=None,
                         help="Merged model output directory")
     parser.add_argument("--merge-only", action="store_true",
                         help="Only merge LoRA → full model (skip training)")
+    parser.add_argument("--quantize-awq", action="store_true",
+                        help="Quantize merged model to AWQ for fast vLLM serving")
+    parser.add_argument("--awq-output", default=None,
+                        help="AWQ model output directory")
     parser.add_argument("--adapter-path", default=None,
                         help="Path to LoRA adapter (for --merge-only)")
+    parser.add_argument("--estimate-vram", action="store_true",
+                        help="Just print VRAM estimate and exit")
     args = parser.parse_args()
 
     project_dir = Path(__file__).parent.parent
     cfg = load_config(args.config)
 
     # Resolve settings (CLI > config > defaults)
-    base_model = args.base_model or cfg.get("base_model", "Qwen/Qwen2.5-VL-7B-Instruct")
-    method = args.method or cfg.get("method", "lora")
+    base_model = args.base_model or cfg.get("base_model", "Qwen/Qwen2.5-VL-72B-Instruct")
     output_dir = args.output_dir or cfg.get("output_dir", str(project_dir / "training" / "checkpoints"))
     merged_dir = args.merged_dir or cfg.get("merged_dir", str(project_dir / "training" / "merged_model"))
+    awq_dir = args.awq_output or str(project_dir / "training" / "awq_model")
+
+    # Auto-detect method: qlora for 72B, lora for 7B
+    is_72b = "72" in base_model.lower()
+    default_method = "qlora" if is_72b else "lora"
+    method = args.method or cfg.get("method", default_method)
 
     lora_config = cfg.get("lora", {
         "r": 64, "alpha": 128, "dropout": 0.05,
         "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
                            "gate_proj", "up_proj", "down_proj"],
     })
+    if args.lora_r:
+        lora_config["r"] = args.lora_r
 
     training_config = cfg.get("training", {
         "epochs": 3, "batch_size": 1, "gradient_accumulation_steps": 8,
         "learning_rate": 1e-4, "warmup_ratio": 0.1, "bf16": True,
+        "gradient_checkpointing": True,
     })
+    # 72B needs smaller batch and more grad accumulation
+    if is_72b and "batch_size" not in cfg.get("training", {}):
+        training_config["batch_size"] = 1
+        training_config["gradient_accumulation_steps"] = 16
 
-    # CLI overrides
     if args.epochs:
         training_config["epochs"] = args.epochs
     if args.lr:
@@ -326,6 +451,36 @@ def main():
     print("=" * 60)
     print("  Qwen2.5-VL Fine-Tuning for Health Claim Forms")
     print("=" * 60)
+    print(f"  Base model: {base_model}")
+    print(f"  Method: {method}{' (auto-detected for 72B)' if method == default_method and is_72b else ''}")
+    print(f"  LoRA rank: {lora_config.get('r', 64)}")
+    print()
+
+    # VRAM estimate
+    vram = estimate_vram(base_model, method, lora_config.get("r", 64))
+    print(f"  Estimated VRAM:")
+    print(f"    Model:       {vram['model_gb']:.1f} GB {'(4-bit NF4)' if method == 'qlora' else '(bf16)'}")
+    print(f"    LoRA:        {vram['adapter_gb']:.1f} GB (bf16)")
+    print(f"    Optimizer:   {vram['optimizer_gb']:.1f} GB")
+    print(f"    Activations: {vram['activations_gb']:.1f} GB (gradient checkpointing)")
+    print(f"    Total:       ~{vram['total_gb']:.0f} GB")
+
+    if args.estimate_vram:
+        return
+
+    if vram["total_gb"] > 140:
+        print(f"\n  WARNING: Estimated {vram['total_gb']:.0f}GB exceeds H200's 141GB!")
+        print(f"  Consider: --method qlora, smaller --lora-r, or --base-model 7B")
+    print()
+
+    # AWQ quantization mode
+    if args.quantize_awq:
+        if not os.path.exists(merged_dir):
+            print(f"ERROR: Merged model not found at {merged_dir}")
+            print(f"Run --merge-only first.")
+            sys.exit(1)
+        quantize_awq(merged_dir, awq_dir)
+        return
 
     # Merge-only mode
     if args.merge_only:
@@ -335,12 +490,13 @@ def main():
             print(f"Train first or pass --adapter-path")
             sys.exit(1)
         merge_lora(base_model, adapter, merged_dir)
+        print(f"\n  Next: re-quantize to AWQ for fast serving:")
+        print(f"    python3 training/finetune_qwen_vl.py --quantize-awq")
         return
 
     # Load training data
     data_path = args.data
     if not data_path:
-        # Try default paths
         for candidate in [
             project_dir / "training" / "finetune_data_qwen.json",
             project_dir / "training" / "finetune_data_sharegpt.json",
@@ -357,8 +513,6 @@ def main():
         print("  3. python3 training/export_finetune.py")
         sys.exit(1)
 
-    print(f"  Base model: {base_model}")
-    print(f"  Method: {method}")
     print(f"  Data: {data_path}")
     print(f"  Output: {output_dir}")
     print()
@@ -367,12 +521,20 @@ def main():
     train_data, test_data = prepare_dataset(data_path)
 
     # Setup model
-    use_qlora = method == "qlora"
-    model, processor = setup_model_and_tokenizer(base_model, lora_config, use_qlora)
+    model, processor = setup_model_and_tokenizer(
+        base_model, lora_config, method=method,
+        gradient_checkpointing=training_config.get("gradient_checkpointing", True),
+    )
 
     # Train
     adapter_path = train(model, processor, train_data, test_data,
                          training_config, output_dir)
+
+    # Free training memory before merge
+    del model
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Merge
     print("\n" + "=" * 60)
@@ -383,12 +545,20 @@ def main():
     print("\n" + "=" * 60)
     print("  Fine-tuning complete!")
     print("=" * 60)
-    print(f"  LoRA adapter: {adapter_path}")
-    print(f"  Merged model: {merged_dir}")
-    print(f"\n  Next steps:")
-    print(f"    1. Serve: bash deploy/start_vllm.sh --model {merged_dir} --quant null --dtype bfloat16")
-    print(f"    2. Test:  python3 qwen_vl_extract.py <pdf> -o result.json")
-    print(f"    3. Eval:  python3 tests/check_accuracy.py --ocr-output result.json --ground-truth tests/ground_truth_health_claim.json")
+    print(f"  LoRA adapter:  {adapter_path}")
+    print(f"  Merged model:  {merged_dir}")
+    print()
+    if is_72b:
+        print(f"  For fast inference, quantize to AWQ:")
+        print(f"    python3 training/finetune_qwen_vl.py --quantize-awq")
+        print(f"    bash deploy/start_vllm.sh --model {awq_dir} --quant awq_marlin --dtype float16")
+    else:
+        print(f"  Serve with vLLM:")
+        print(f"    bash deploy/start_vllm.sh --model {merged_dir} --quant null --dtype bfloat16")
+    print()
+    print(f"  Test:")
+    print(f"    python3 qwen_vl_extract.py <pdf> -o result.json")
+    print(f"    python3 tests/check_accuracy.py --ocr-output result.json --ground-truth tests/ground_truth_health_claim.json")
 
 
 if __name__ == "__main__":
