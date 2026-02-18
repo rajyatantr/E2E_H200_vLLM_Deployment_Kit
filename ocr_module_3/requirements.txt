@@ -1,17 +1,32 @@
+# ============================================================================
+# ADE Pipeline v2 — Dependencies
+# ============================================================================
+
+# --- Core (required for extraction) ---
+vllm>=0.8
+PyMuPDF                    # PDF → image rendering (fitz)
+pyyaml                     # config.yaml parsing
+
+# --- API Server (optional, for web interface) ---
 fastapi
 uvicorn[standard]
 python-multipart
 jinja2
-
-# vLLM (replaces transformers for inference)
-vllm>=0.8.5
-
-# OlmOCR utilities (PDF rendering + prompts only)
-olmocr
-
-# Other
-pillow
-PyPDF2
 aiosqlite==0.19.0
-huggingface-hub
-pyyaml
+
+# --- Training & Fine-tuning (install on GPU machine) ---
+# Uncomment these when running fine-tuning:
+# transformers>=4.45.0
+# peft>=0.13.0
+# accelerate>=0.34.0
+# bitsandbytes>=0.44.0     # For QLoRA 4-bit quantization
+# datasets
+# pillow
+
+# --- Evaluation ---
+# (no extra deps — check_accuracy.py uses stdlib only)
+
+# --- Legacy (from v1 hybrid pipeline) ---
+# olmocr                   # No longer needed — replaced by Qwen-VL
+# PyPDF2                   # No longer needed — replaced by PyMuPDF
+# huggingface-hub          # Only needed for model download (vLLM handles this)

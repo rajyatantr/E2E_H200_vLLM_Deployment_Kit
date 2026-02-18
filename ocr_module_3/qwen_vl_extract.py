@@ -27,20 +27,49 @@ Usage:
 import argparse
 import base64
 import json
+import os
 import re
 import sys
 import time
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (defaults, overridden by config.yaml)
 # ---------------------------------------------------------------------------
 
 QWEN_VL_URL = "http://localhost:8000"
 MODEL_NAME = "Qwen/Qwen2.5-VL-72B-Instruct-AWQ"
 TARGET_LONG_EDGE = 1792  # px — balanced for handwriting + model processing
+
+
+def load_config(config_path=None):
+    """Load settings from config.yaml. Returns dict (empty if not found)."""
+    if config_path is None:
+        config_path = Path(__file__).parent / "config.yaml"
+    try:
+        import yaml
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def apply_config(cfg):
+    """Apply config.yaml values to global settings."""
+    global QWEN_VL_URL, MODEL_NAME, TARGET_LONG_EDGE
+
+    model_cfg = cfg.get("model", {})
+    if model_cfg.get("name"):
+        MODEL_NAME = model_cfg["name"]
+    if model_cfg.get("vllm_url"):
+        QWEN_VL_URL = model_cfg["vllm_url"]
+
+    ext_cfg = cfg.get("extraction", {})
+    if ext_cfg.get("target_long_edge"):
+        TARGET_LONG_EDGE = int(ext_cfg["target_long_edge"])
 
 # ---------------------------------------------------------------------------
 # PAGE_FIELD_MAP — maps each page to fields + section hints
@@ -147,7 +176,7 @@ def _parse_json_response(text):
 # Pass 1: PDF → Base64 PNG images
 # ---------------------------------------------------------------------------
 
-def pass1_render_pdf(pdf_path):
+def pass1_render_pdf(pdf_path, target_long_edge=None):
     """Render each page of *pdf_path* as a high-res base64-encoded PNG."""
     try:
         import fitz  # PyMuPDF
@@ -155,6 +184,7 @@ def pass1_render_pdf(pdf_path):
         print("ERROR: PyMuPDF not installed. Run: pip install PyMuPDF")
         sys.exit(1)
 
+    edge = target_long_edge or TARGET_LONG_EDGE
     print("[Pass 1] PDF → Base64 PNG rendering...")
     t0 = time.time()
     doc = fitz.open(pdf_path)
@@ -162,10 +192,10 @@ def pass1_render_pdf(pdf_path):
 
     for page_num in range(len(doc)):
         page = doc[page_num]
-        # Scale so longest edge ≈ TARGET_LONG_EDGE
+        # Scale so longest edge ≈ target
         rect = page.rect
         long_edge = max(rect.width, rect.height)
-        zoom = TARGET_LONG_EDGE / long_edge if long_edge > 0 else 1.0
+        zoom = edge / long_edge if long_edge > 0 else 1.0
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         png_bytes = pix.tobytes("png")
@@ -180,7 +210,7 @@ def pass1_render_pdf(pdf_path):
     doc.close()
     elapsed = time.time() - t0
     print(f"  Rendered {len(pages)} pages in {elapsed:.1f}s "
-          f"(target {TARGET_LONG_EDGE}px)")
+          f"(target {edge}px)")
     return pages, elapsed
 
 
@@ -810,8 +840,10 @@ def pass6_normalize(extracted):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run_pipeline(pdf_path):
+def run_pipeline(pdf_path, config=None):
     """Execute the full 6-pass pipeline and return results dict."""
+    if config:
+        apply_config(config)
     print("=" * 60)
     print("  ADE PIPELINE v2 — Single Qwen2.5-VL (Agentic)")
     print("  6-pass: render → extract → validate → agentic → xpage → norm")
@@ -868,6 +900,57 @@ def run_pipeline(pdf_path):
     return output
 
 
+def _auto_save_training(pdf_path, result, cfg):
+    """Auto-save inference result as training data if configured."""
+    train_cfg = cfg.get("training", {})
+    if not train_cfg.get("auto_collect", False):
+        return
+
+    data_dir = train_cfg.get("data_dir", "./training/data")
+    # Resolve relative to project dir
+    if not os.path.isabs(data_dir):
+        data_dir = os.path.join(os.path.dirname(__file__), data_dir)
+    os.makedirs(data_dir, exist_ok=True)
+
+    import hashlib
+    doc_hash = hashlib.sha256(open(pdf_path, "rb").read()).hexdigest()[:16]
+    timestamp = int(time.time())
+    base_name = f"{doc_hash}_{timestamp}"
+
+    # Save page images if configured
+    image_files = {}
+    if train_cfg.get("save_page_images", True):
+        page_images, _ = pass1_render_pdf(pdf_path)
+        for img in page_images:
+            pn = img["page_num"]
+            img_path = os.path.join(data_dir, f"{base_name}_page{pn}.png")
+            png_bytes = base64.b64decode(img["base64_png"])
+            with open(img_path, "wb") as f:
+                f.write(png_bytes)
+            image_files[pn] = f"{base_name}_page{pn}.png"
+
+    sample = {
+        "id": base_name,
+        "source_pdf": os.path.basename(pdf_path),
+        "source_hash": doc_hash,
+        "timestamp": timestamp,
+        "status": train_cfg.get("annotation_status", "pending"),
+        "extracted_data": result.get("structured_data", {}),
+        "ground_truth": None,
+        "corrections": {},
+        "page_images": image_files,
+        "pages_processed": result.get("pages_processed", 0),
+        "model": result.get("model", ""),
+        "pipeline": result.get("pipeline", ""),
+        "timing": result.get("timing", {}),
+    }
+
+    json_path = os.path.join(data_dir, f"{base_name}.json")
+    with open(json_path, "w") as f:
+        json.dump(sample, f, indent=2, ensure_ascii=False)
+    print(f"  Training data saved: {json_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="ADE Pipeline v2 — Single Qwen2.5-VL extraction"
@@ -875,15 +958,24 @@ def main():
     parser.add_argument("pdf_path", help="Path to PDF file")
     parser.add_argument("--output", "-o", default=None,
                         help="Output JSON file path")
+    parser.add_argument("--config", "-c", default=None,
+                        help="Path to config.yaml")
     parser.add_argument("--vllm-url", default=None,
-                        help="vLLM endpoint URL (default: http://localhost:8000)")
+                        help="vLLM endpoint URL (overrides config)")
+    parser.add_argument("--no-training-save", action="store_true",
+                        help="Skip auto-saving training data")
     args = parser.parse_args()
 
+    # Load config
+    cfg = load_config(args.config)
+    apply_config(cfg)
+
+    # CLI overrides take precedence
     if args.vllm_url:
         global QWEN_VL_URL
         QWEN_VL_URL = args.vllm_url.rstrip("/")
 
-    result = run_pipeline(args.pdf_path)
+    result = run_pipeline(args.pdf_path, config=cfg)
 
     output_json = json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -907,6 +999,13 @@ def main():
         f"xpage: {timing['pass5_crosspage_seconds']:.1f}s + "
         f"normalize: {timing['pass6_normalize_seconds']:.1f}s)"
     )
+
+    # Auto-save training data
+    if not args.no_training_save:
+        try:
+            _auto_save_training(args.pdf_path, result, cfg)
+        except Exception as e:
+            print(f"  Training data save skipped: {e}")
 
 
 if __name__ == "__main__":

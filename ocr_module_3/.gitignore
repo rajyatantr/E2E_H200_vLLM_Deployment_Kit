@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Training data (large images, model checkpoints)
+training/data/*.png
+training/data/*.json
+!training/data/.gitkeep
+training/checkpoints/
+training/merged_model/
+training/finetune_data_*.json
+
+# vLLM server
+vllm_server.log
+vllm_server.pid
+
+# Models
+models/
+
+# Database
+database/*.db
+
+# OS
+.DS_Store

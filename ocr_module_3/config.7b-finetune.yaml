@@ -1,0 +1,46 @@
+# ============================================================================
+# Config variant: Fine-tuned 7B model (after running finetune_qwen_vl.py)
+# ============================================================================
+# Usage: python3 qwen_vl_extract.py --config config.7b-finetune.yaml <pdf>
+#        bash deploy/start_vllm.sh  (reads from config.yaml — copy this file)
+
+model:
+  # Point to your merged fine-tuned model:
+  name: "./training/merged_model"
+  # Or if serving from HF hub after uploading:
+  # name: "your-org/qwen-vl-7b-health-claims-v1"
+  vllm_url: "http://localhost:8000"
+
+vllm:
+  port: 8000
+  dtype: "bfloat16"           # Full precision for fine-tuned 7B
+  quantization: null           # No quantization for fine-tuned model
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+  max_num_seqs: 10
+  tensor_parallel_size: 1
+  trust_remote_code: true
+  limit_mm_per_prompt: '{"image": 1}'
+  mm_processor_kwargs: '{"min_pixels": 784, "max_pixels": 1003520}'
+
+extraction:
+  target_long_edge: 1792
+  max_tokens_per_page: 1024
+  temperature: 0.1
+  parallel_pages: true
+
+agentic:
+  enabled: true
+  vote_attempts: 3
+  vote_temperatures: [0.1, 0.2, 0.3]
+  max_workers: 10
+
+cross_page:
+  enabled: true
+  prefer_hospital_page: true
+
+training:
+  auto_collect: true
+  data_dir: "./training/data"
+  save_page_images: true
+  annotation_status: "pending"

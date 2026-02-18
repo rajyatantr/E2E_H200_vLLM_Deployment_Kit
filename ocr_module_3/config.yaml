@@ -1,0 +1,86 @@
+# ============================================================================
+# ADE Pipeline v2 — Configuration
+# ============================================================================
+# Copy this file and adjust for your environment.
+# The extraction script reads from ./config.yaml by default,
+# or pass --config /path/to/config.yaml
+
+# ---------------------------------------------------------------------------
+# Model & Inference
+# ---------------------------------------------------------------------------
+model:
+  name: "Qwen/Qwen2.5-VL-72B-Instruct-AWQ"
+  # For fine-tuned models, point to local path:
+  # name: "/data/models/qwen-vl-72b-health-claim-lora-merged"
+  vllm_url: "http://localhost:8000"
+
+# ---------------------------------------------------------------------------
+# vLLM Server Settings (used by deploy/start_vllm.sh)
+# ---------------------------------------------------------------------------
+vllm:
+  port: 8000
+  dtype: "float16"
+  quantization: "awq_marlin"       # awq_marlin | awq | null (for full-precision)
+  max_model_len: 8192
+  gpu_memory_utilization: 0.90
+  max_num_seqs: 10
+  tensor_parallel_size: 1          # Increase for multi-GPU
+  trust_remote_code: true
+  limit_mm_per_prompt: '{"image": 1}'
+  mm_processor_kwargs: '{"min_pixels": 784, "max_pixels": 1003520}'
+
+# ---------------------------------------------------------------------------
+# Extraction Pipeline
+# ---------------------------------------------------------------------------
+extraction:
+  target_long_edge: 1792           # Image rendering resolution (px)
+  max_tokens_per_page: 1024        # Max tokens for page extraction
+  temperature: 0.1                 # Base temperature for extraction
+  parallel_pages: true             # Extract all pages in parallel
+
+# ---------------------------------------------------------------------------
+# Agentic Re-extraction (Pass 4)
+# ---------------------------------------------------------------------------
+agentic:
+  enabled: true
+  vote_attempts: 3                 # Number of voting attempts for critical fields
+  vote_temperatures: [0.1, 0.2, 0.3]
+  max_workers: 10                  # Max parallel API calls for voting
+
+# ---------------------------------------------------------------------------
+# Cross-page Consistency (Pass 5)
+# ---------------------------------------------------------------------------
+cross_page:
+  enabled: true
+  prefer_hospital_page: true       # Prefer page 4 (Part B) for dates/gender
+
+# ---------------------------------------------------------------------------
+# Training Data Collection
+# ---------------------------------------------------------------------------
+training:
+  auto_collect: true               # Save every inference as training data
+  data_dir: "./training/data"      # Where to store training pairs
+  save_page_images: true           # Save rendered page PNGs alongside JSON
+  annotation_status: "pending"     # Default status: pending | reviewed | approved
+
+# ---------------------------------------------------------------------------
+# Fine-tuning Settings
+# ---------------------------------------------------------------------------
+finetune:
+  base_model: "Qwen/Qwen2.5-VL-7B-Instruct"   # Start from 7B for fine-tuning
+  method: "lora"                   # lora | qlora | full
+  lora:
+    r: 64
+    alpha: 128
+    dropout: 0.05
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  training:
+    epochs: 3
+    batch_size: 1
+    gradient_accumulation_steps: 8
+    learning_rate: 1.0e-4
+    warmup_ratio: 0.1
+    max_length: 4096
+    bf16: true
+  output_dir: "./training/checkpoints"
+  merged_dir: "./training/merged_model"
