@@ -37,12 +37,12 @@
         "medico_legal": "Yes"
       },
       "section_e_details_of_claim": {
-        "hospitalization_expenses": "101150",
-        "post_hospitalization_expenses": "11500"
+        "hospitalization_expenses": "17750",
+        "post_hospitalization_expenses": "8640"
       },
       "section_g_bank_details": {
-        "pan": "AISPP0101A",
-        "bank_name_and_branch": "KARUR BANK",
+        "pan": "ASFPP0101Q",
+        "bank_name_and_branch": "HDFC Bank",
         "ifsc_code": "ADFC00433"
       }
     },
@@ -66,7 +66,7 @@
         "date_of_discharge": "24/11/23",
         "type_of_admission": "Emergency",
         "status_at_discharge": "Discharge to home",
-        "total_claimed_amount": "263901"
+        "total_claimed_amount": "26390"
       },
       "section_c_diagnosis": {
         "primary_diagnosis": "Acute Cholecystitis",
@@ -165,24 +165,24 @@
     "MEDSTAR SPECIALITY HOSPITAL",
     "21/11/23",
     "24/11/23",
-    "101150",
-    "AISPP0101A",
+    "17750",
+    "ASFPP0101Q",
     "MBBS",
     "KMC63431",
     "OP265214",
-    "263901",
+    "26390",
     "Acute Cholecystitis",
     "Bangalore",
     "86407",
-    "KARUR BANK",
+    "HDFC Bank",
     "ADFC00433",
     "A ARUN"
   ],
 
   "critical_financial_values": [
-    {"field": "hospitalization_expenses", "value": "101150", "page": 2},
-    {"field": "post_hospitalization_expenses", "value": "11500", "page": 2},
+    {"field": "hospitalization_expenses", "value": "17750", "page": 2},
+    {"field": "post_hospitalization_expenses", "value": "8640", "page": 2},
     {"field": "pharmacy_bill_amount", "value": "86407", "page": 2},
-    {"field": "total_claimed_amount", "value": "263901", "page": 4}
+    {"field": "total_claimed_amount", "value": "26390", "page": 4}
   ]
 }

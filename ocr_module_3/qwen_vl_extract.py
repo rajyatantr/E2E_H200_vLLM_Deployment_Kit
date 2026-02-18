@@ -3,19 +3,21 @@
 qwen_vl_extract.py — ADE Pipeline v2: Single Qwen2.5-VL model
 
 Replaces the hybrid OlmOCR + Qwen-text dual-model setup with a single
-Qwen2.5-VL-7B-Instruct that reads PDF page images directly.
+Qwen2.5-VL-72B-Instruct-AWQ that reads PDF page images directly.
 
-5-Pass Architecture:
+6-Pass Architecture:
   Pass 1: Python   → Render PDF pages to base64 PNG images (PyMuPDF)
-  Pass 2: Qwen-VL  → Page-specific extraction (image + text prompt per page)
+  Pass 2: Qwen-VL  → Parallel page-specific extraction (image+text per page)
   Pass 3: Python   → Deterministic validation (format, financial reconciliation)
-  Pass 4: Qwen-VL  → Targeted re-extraction of failed fields (re-read image)
-  Pass 5: Python   → Normalization and final output
+  Pass 4: Qwen-VL  → Agentic re-extraction (strategy per field type, voting)
+  Pass 5: Python   → Cross-page consistency checks
+  Pass 6: Python   → Normalization and final output
 
-H200 deployment (single vLLM instance):
-  vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8000 --dtype bfloat16 \
-    --max-model-len 8192 --gpu-memory-utilization 0.90 --max-num-seqs 10 \
-    --trust-remote-code --limit-mm-per-prompt image=1 \
+H200 deployment (single vLLM instance, awq_marlin for speed):
+  vllm serve Qwen/Qwen2.5-VL-72B-Instruct-AWQ --port 8000 --dtype float16 \
+    --quantization awq_marlin --max-model-len 8192 \
+    --gpu-memory-utilization 0.90 --max-num-seqs 10 --trust-remote-code \
+    --limit-mm-per-prompt '{"image": 1}' \
     --mm-processor-kwargs '{"min_pixels": 784, "max_pixels": 1003520}'
 
 Usage:
@@ -30,14 +32,15 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 QWEN_VL_URL = "http://localhost:8000"
-MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
-TARGET_LONG_EDGE = 1792  # px — better for handwriting than default 1288
+MODEL_NAME = "Qwen/Qwen2.5-VL-72B-Instruct-AWQ"
+TARGET_LONG_EDGE = 1792  # px — balanced for handwriting + model processing
 
 # ---------------------------------------------------------------------------
 # PAGE_FIELD_MAP — maps each page to fields + section hints
@@ -215,60 +218,69 @@ def _build_page_prompt(page_num, field_map):
     return prompt
 
 
+def _extract_single_page(img, field_map):
+    """Extract fields from a single page image (used by thread pool)."""
+    pn = img["page_num"]
+    prompt = _build_page_prompt(pn, field_map)
+    b64_url = f"data:image/png;base64,{img['base64_png']}"
+
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": b64_url}},
+                ],
+            }
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.1,
+    }
+
+    resp = api_post(f"{QWEN_VL_URL}/v1/chat/completions", payload)
+    content = resp["choices"][0]["message"]["content"]
+    tokens = resp.get("usage", {}).get("completion_tokens", 0)
+    parsed = _parse_json_response(content)
+    return pn, parsed, tokens, content
+
+
 def pass2_extract(page_images, field_map):
-    """Send each page image + targeted prompt to Qwen-VL for extraction."""
-    print("[Pass 2] Qwen-VL → Page-specific extraction...")
+    """Send all page images in parallel to Qwen-VL for extraction."""
+    print("[Pass 2] Qwen-VL → Parallel page extraction...")
     t0 = time.time()
 
     all_extracted = {}
     total_tokens = 0
 
-    for img in page_images:
-        pn = img["page_num"]
-        if pn not in field_map:
-            continue
+    # Filter to pages that have field mappings
+    pages_to_extract = [img for img in page_images if img["page_num"] in field_map]
+    num_pages = len(pages_to_extract)
+    print(f"  Sending {num_pages} pages in parallel...", flush=True)
 
-        prompt = _build_page_prompt(pn, field_map)
-        b64_url = f"data:image/png;base64,{img['base64_png']}"
-
-        payload = {
-            "model": MODEL_NAME,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": b64_url},
-                        },
-                    ],
-                }
-            ],
-            "max_tokens": 1024,
-            "temperature": 0.1,
+    with ThreadPoolExecutor(max_workers=num_pages) as executor:
+        futures = {
+            executor.submit(_extract_single_page, img, field_map): img["page_num"]
+            for img in pages_to_extract
         }
 
-        print(f"  Page {pn}: extracting {len(field_map[pn]['fields'])} fields ...", end=" ", flush=True)
-        try:
-            resp = api_post(f"{QWEN_VL_URL}/v1/chat/completions", payload)
-            content = resp["choices"][0]["message"]["content"]
-            tokens = resp.get("usage", {}).get("completion_tokens", 0)
-            total_tokens += tokens
-
-            parsed = _parse_json_response(content)
-            if parsed:
-                all_extracted.update(parsed)
-                print(f"OK ({tokens} tokens, {len(parsed)} fields)")
-            else:
-                print(f"WARN: could not parse JSON")
-                # Store raw response for debugging
-                all_extracted[f"_raw_page_{pn}"] = content
-        except Exception as e:
-            print(f"ERROR: {e}")
+        for future in as_completed(futures):
+            pn = futures[future]
+            try:
+                pn, parsed, tokens, raw_content = future.result()
+                total_tokens += tokens
+                if parsed:
+                    all_extracted.update(parsed)
+                    print(f"  Page {pn}: OK ({tokens} tokens, {len(parsed)} fields)")
+                else:
+                    print(f"  Page {pn}: WARN — could not parse JSON")
+                    all_extracted[f"_raw_page_{pn}"] = raw_content
+            except Exception as e:
+                print(f"  Page {pn}: ERROR — {e}")
 
     elapsed = time.time() - t0
-    print(f"  Pass 2 done in {elapsed:.1f}s ({total_tokens} total tokens)")
+    print(f"  Pass 2 done in {elapsed:.1f}s ({total_tokens} total tokens, {num_pages} pages parallel)")
     return all_extracted, elapsed
 
 
@@ -403,7 +415,7 @@ def pass3_validate(extracted):
 
 
 # ---------------------------------------------------------------------------
-# Pass 4: Targeted re-extraction for failed fields
+# Pass 4: Agentic re-extraction (strategy per field type + majority voting)
 # ---------------------------------------------------------------------------
 
 # Map fields back to which page they come from
@@ -412,10 +424,154 @@ for _pn, _info in PAGE_FIELD_MAP.items():
     for _fld in _info["fields"]:
         FIELD_TO_PAGE[_fld] = _pn
 
+# Field type classification for strategy selection
+FINANCIAL_FIELDS = {"hospitalization_expenses", "post_hospitalization_expenses",
+                    "total_claimed_amount"}
+CODE_FIELDS = {"pan", "ifsc_code", "mobile_no", "policy_no",
+               "ip_registration_number", "registration_no_with_state_code"}
+MEDICAL_FIELDS = {"primary_diagnosis", "additional_diagnosis"}
+NAME_FIELDS = {"treating_doctor", "insured_name", "patient_name"}
 
-def pass4_reextract(failures, extracted, page_images, field_map):
-    """Re-extract only failed fields with focused prompts + slightly higher temp."""
-    # Filter to extractable failures (skip _financial_reconciliation, etc.)
+# Fields that appear on multiple pages (page → field name on that page)
+CROSS_PAGE_FIELDS = {
+    "hospital_name": [2, 4],
+    "date_of_admission": [2, 4],
+    "date_of_discharge": [2, 4],
+    "gender": [2, 4],
+    "age_years": [2, 4],
+}
+
+# Number of voting attempts for critical fields
+VOTE_ATTEMPTS = 3
+
+
+def _build_strategy_prompt(field, prev_val, page_num, section_hint, is_verification=False):
+    """Build a field-type-specific prompt for agentic re-extraction.
+
+    When is_verification=True, uses neutral prompts (no "this may be wrong" bias).
+    """
+
+    if field in FINANCIAL_FIELDS:
+        return (
+            f"Look at page {page_num} of this health insurance claim form.\n"
+            f"Page: {section_hint}\n\n"
+            f"Read the EXACT monetary amount for: {field}\n\n"
+            f"Instructions for reading the amount:\n"
+            f"1. Find the field labeled for this amount on the form\n"
+            f"2. Read EACH DIGIT one at a time, left to right\n"
+            f"3. Watch for: 1 vs 7, 0 vs 6, 5 vs 3, 4 vs 9\n"
+            f"4. Count the total number of digits carefully\n"
+            f"5. Return ONLY digits, no commas or symbols\n\n"
+            f'Return JSON: {{"{field}": "<digits only>"}}\n'
+            f"JSON:"
+        )
+
+    if field in CODE_FIELDS:
+        fmt_hint = ""
+        if field == "pan":
+            fmt_hint = "PAN format: 5 letters + 4 digits + 1 letter (e.g. ABCDE1234F)"
+        elif field == "ifsc_code":
+            fmt_hint = "IFSC format: 4 letters + 0 + 6 alphanumeric (11 chars, e.g. HDFC0001234)"
+        elif field == "mobile_no":
+            fmt_hint = "Indian mobile: exactly 10 digits starting with 6-9"
+        elif field == "ip_registration_number":
+            fmt_hint = "IP/OP registration: typically starts with IP or OP followed by digits"
+        elif field == "registration_no_with_state_code":
+            fmt_hint = "Medical registration: state code + digits (e.g. KMC12345)"
+
+        return (
+            f"Look at page {page_num} of this health insurance claim form.\n"
+            f"Page: {section_hint}\n\n"
+            f"Read this code/number carefully: {field}\n"
+            f"{fmt_hint}\n\n"
+            f"Instructions:\n"
+            f"1. Find this field on the form\n"
+            f"2. Read EACH CHARACTER one at a time: spell it out like "
+            f"\"first char is H, second is D, third is F, fourth is C...\"\n"
+            f"3. Then combine them into the final value\n"
+            f"4. Common confusions: 0↔O, 1↔I↔l, 5↔S, 8↔B, P↔R, F↔E\n\n"
+            f'Return JSON: {{"{field}": "<your reading>"}}\n'
+            f"JSON:"
+        )
+
+    if field in MEDICAL_FIELDS:
+        return (
+            f"Look at page {page_num} of this health insurance claim form.\n"
+            f"Page: {section_hint}\n\n"
+            f"Read the medical diagnosis field: {field}\n\n"
+            f"This is a MEDICAL DIAGNOSIS written by a doctor. Common diagnoses include:\n"
+            f"- Acute Cholecystitis, Chronic Cholecystitis\n"
+            f"- Acute Appendicitis, Acute Pancreatitis\n"
+            f"- Acute Tonsillitis, Acute Follicular Tonsillitis\n"
+            f"- Dengue Fever, Typhoid, Malaria\n"
+            f"- Hernia (Inguinal/Umbilical), Kidney Stones\n"
+            f"- Fracture, Ligament Tear, Disc Prolapse\n"
+            f"- Pneumonia, Bronchitis, Asthma\n\n"
+            f"Read the handwriting carefully and match to the closest real diagnosis.\n\n"
+            f'Return JSON: {{"{field}": "<diagnosis>"}}\n'
+            f"JSON:"
+        )
+
+    if field in NAME_FIELDS:
+        return (
+            f"Look at page {page_num} of this health insurance claim form.\n"
+            f"Page: {section_hint}\n\n"
+            f"Read this person's name: {field}\n\n"
+            f"Instructions:\n"
+            f"1. This is a handwritten name — read each letter carefully\n"
+            f"2. Indian names: look for common patterns (Dr., Kumar, Singh, etc.)\n"
+            f"3. Return the name exactly as written, with proper capitalization\n\n"
+            f'Return JSON: {{"{field}": "<name>"}}\n'
+            f"JSON:"
+        )
+
+    # Generic fallback
+    return (
+        f"Look at page {page_num} of this health insurance claim form.\n"
+        f"Page: {section_hint}\n\n"
+        f"Read this field very carefully: {field}\n\n"
+        f'Return JSON: {{"{field}": "<your reading>"}}\n'
+        f"JSON:"
+    )
+
+
+def _vote_single_attempt(field, img, prompt, temperature):
+    """One voting attempt for a single field."""
+    b64_url = f"data:image/png;base64,{img['base64_png']}"
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": b64_url}},
+        ]}],
+        "max_tokens": 256,
+        "temperature": temperature,
+    }
+    resp = api_post(f"{QWEN_VL_URL}/v1/chat/completions", payload)
+    content = resp["choices"][0]["message"]["content"]
+    tokens = resp.get("usage", {}).get("completion_tokens", 0)
+    parsed = _parse_json_response(content)
+    value = parsed.get(field) if parsed else None
+    return value, tokens
+
+
+def _majority_vote(values):
+    """Return the most common non-null value from a list."""
+    clean = [str(v).strip() for v in values
+             if v is not None and str(v).strip().lower() != "null"]
+    if not clean:
+        return None
+    from collections import Counter
+    counts = Counter(clean)
+    return counts.most_common(1)[0][0]
+
+
+def pass4_agentic(failures, extracted, page_images, field_map):
+    """Agentic re-extraction: picks strategy per field, votes on critical fields.
+
+    Only re-extracts fields that FAILED Pass 3 validation.
+    For voting fields, includes Pass 2's original value as one vote.
+    """
     reextract_fields = {
         f: reason for f, reason in failures.items()
         if not f.startswith("_") and f in FIELD_TO_PAGE
@@ -425,97 +581,174 @@ def pass4_reextract(failures, extracted, page_images, field_map):
         print("[Pass 4] No fields to re-extract — skipping.")
         return extracted, 0.0
 
-    print(f"[Pass 4] Qwen-VL → Re-extracting {len(reextract_fields)} failed fields...")
+    print(f"[Pass 4] Agentic re-extraction → {len(reextract_fields)} fields "
+          f"({sum(1 for f in reextract_fields if f in FINANCIAL_FIELDS)} financial, "
+          f"{sum(1 for f in reextract_fields if f in CODE_FIELDS)} codes, "
+          f"{sum(1 for f in reextract_fields if f in MEDICAL_FIELDS)} medical)...")
     t0 = time.time()
-
-    # Group failed fields by page
-    page_fields = {}
-    for field, reason in reextract_fields.items():
-        pn = FIELD_TO_PAGE[field]
-        page_fields.setdefault(pn, []).append((field, reason))
 
     total_tokens = 0
     updated = dict(extracted)
 
-    for pn, fields_reasons in page_fields.items():
+    # Build all tasks: (field, img, prompt, temperature)
+    tasks = []
+    for field, reason in reextract_fields.items():
+        pn = FIELD_TO_PAGE[field]
         img = next((i for i in page_images if i["page_num"] == pn), None)
         if not img:
             continue
 
-        field_instructions = []
-        field_keys = []
-        for field, reason in fields_reasons:
-            prev_val = extracted.get(field)
-            desc = field_map[pn]["fields"].get(field, "")
-            hint = f'  - "{field}": {desc}'
-            if prev_val and str(prev_val).strip().lower() != "null":
-                hint += f' (previous attempt returned "{prev_val}" which failed: {reason})'
-            field_instructions.append(hint)
-            field_keys.append(field)
+        prev_val = extracted.get(field, "")
+        hint = field_map[pn]["section_hint"]
+        prompt = _build_strategy_prompt(field, prev_val, pn, hint)
 
-        prompt = (
-            f"Look at this scanned page very carefully.\n"
-            f"I need you to re-read these specific fields — the previous extraction had errors.\n"
-            f"Page {pn}: {field_map[pn]['section_hint']}\n\n"
-            f"Fields to re-extract (read the image very carefully):\n"
-            + "\n".join(field_instructions)
-            + f"\n\nCommon handwriting mistakes to watch for:\n"
-            f"- 0 vs O, 1 vs I vs l, 5 vs S, 6 vs G, 8 vs B\n"
-            f"- Dates: slash vs dash, 2-digit vs 4-digit year\n"
-            f"- Amounts: extra/missing digits, commas misread as digits\n\n"
-            f"Return ONLY JSON with keys: {json.dumps(field_keys)}\n"
-            f"JSON:"
-        )
+        # Financial + code fields get voting (3 attempts at different temps)
+        if field in FINANCIAL_FIELDS or field in CODE_FIELDS:
+            for temp in [0.1, 0.2, 0.3]:
+                tasks.append((field, img, prompt, temp))
+        else:
+            # Single attempt at temp 0.15
+            tasks.append((field, img, prompt, 0.15))
 
-        b64_url = f"data:image/png;base64,{img['base64_png']}"
-        payload = {
-            "model": MODEL_NAME,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": b64_url}},
-                    ],
-                }
-            ],
-            "max_tokens": 512,
-            "temperature": 0.2,
-        }
+    # Execute all tasks in parallel
+    field_votes = {}  # field → list of values
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 10)) as executor:
+        future_map = {}
+        for field, img, prompt, temp in tasks:
+            fut = executor.submit(_vote_single_attempt, field, img, prompt, temp)
+            future_map[fut] = field
 
-        print(f"  Page {pn}: re-extracting {[f for f, _ in fields_reasons]} ...", end=" ", flush=True)
-        try:
-            resp = api_post(f"{QWEN_VL_URL}/v1/chat/completions", payload)
-            content = resp["choices"][0]["message"]["content"]
-            tokens = resp.get("usage", {}).get("completion_tokens", 0)
-            total_tokens += tokens
+        for future in as_completed(future_map):
+            field = future_map[future]
+            try:
+                value, tokens = future.result()
+                total_tokens += tokens
+                field_votes.setdefault(field, []).append(value)
+            except Exception as e:
+                print(f"    {field}: attempt error — {e}")
 
-            parsed = _parse_json_response(content)
-            if parsed:
-                for k, v in parsed.items():
-                    if v is not None and str(v).strip().lower() != "null":
-                        updated[k] = v
-                print(f"OK ({tokens} tokens)")
+    # Resolve votes — include Pass 2's original value as a vote for multi-attempt fields
+    for field, votes in field_votes.items():
+        orig = extracted.get(field)
+        if len(votes) > 1 and orig is not None and str(orig).strip():
+            votes.append(str(orig).strip())  # Pass 2's value gets a vote too
+
+        winner = _majority_vote(votes)
+        if winner is not None and str(winner).strip().lower() != "null":
+            strategy = "vote" if len(votes) > 1 else "single"
+            unique = set(str(v) for v in votes if v is not None)
+            if len(votes) > 1:
+                print(f"  {field}: {strategy} [{len(votes)} attempts, "
+                      f"{len(unique)} unique] → {winner}")
             else:
-                print("WARN: could not parse")
-        except Exception as e:
-            print(f"ERROR: {e}")
+                print(f"  {field}: {strategy} → {winner}")
+            updated[field] = winner
 
     elapsed = time.time() - t0
-    print(f"  Pass 4 done in {elapsed:.1f}s ({total_tokens} tokens)")
+    print(f"  Pass 4 done in {elapsed:.1f}s ({total_tokens} tokens, {len(tasks)} API calls)")
     return updated, elapsed
 
 
 # ---------------------------------------------------------------------------
-# Pass 5: Normalization and final output
+# Pass 5: Cross-page consistency
+# ---------------------------------------------------------------------------
+
+def pass5_cross_page(extracted, page_images, field_map):
+    """Extract cross-page fields from alternate pages and apply corrections.
+
+    Page 4 (Part B, hospital-filled) is preferred for: dates, gender, age
+    because hospital staff entries are typically more legible/accurate.
+    """
+    print("[Pass 5] Qwen-VL → Cross-page consistency...")
+    t0 = time.time()
+    corrections = 0
+    total_tokens = 0
+
+    # Fields where page 4 (hospital section) is more reliable
+    PREFER_PAGE_4 = {"date_of_admission", "date_of_discharge", "gender", "age_years"}
+
+    tasks = []
+    for field, pages in CROSS_PAGE_FIELDS.items():
+        current_val = extracted.get(field)
+        if current_val is None:
+            continue
+
+        current_page = FIELD_TO_PAGE.get(field)
+        other_pages = [p for p in pages if p != current_page]
+        if not other_pages:
+            continue
+
+        alt_page = other_pages[0]
+        img = next((i for i in page_images if i["page_num"] == alt_page), None)
+        if not img:
+            continue
+
+        alt_hint = field_map.get(alt_page, {}).get("section_hint", "")
+        prompt = (
+            f"Look at page {alt_page} of this health insurance claim form.\n"
+            f"Page: {alt_hint}\n\n"
+            f"Read the value for: {field}\n"
+            f"Return ONLY a JSON object: {{\"{field}\": \"<value>\"}}\n"
+            f"JSON:"
+        )
+        tasks.append((field, img, prompt, 0.1, current_val, current_page, alt_page))
+
+    if not tasks:
+        elapsed = time.time() - t0
+        print(f"  No cross-page fields to check.")
+        print(f"  Pass 5 done in {elapsed:.1f}s ({corrections} corrections)")
+        return extracted, elapsed
+
+    updated = dict(extracted)
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 5)) as executor:
+        future_map = {}
+        for field, img, prompt, temp, cur_val, cur_pg, alt_pg in tasks:
+            fut = executor.submit(_vote_single_attempt, field, img, prompt, temp)
+            future_map[fut] = (field, cur_val, cur_pg, alt_pg)
+
+        for future in as_completed(future_map):
+            field, cur_val, cur_pg, alt_pg = future_map[future]
+            try:
+                alt_val, tokens = future.result()
+                total_tokens += tokens
+                if alt_val is None:
+                    continue
+
+                cur_str = str(cur_val).strip()
+                alt_str = str(alt_val).strip()
+
+                if cur_str.lower() == alt_str.lower():
+                    print(f"  {field}: pages {cur_pg}&{alt_pg} agree → {cur_val}")
+                else:
+                    # Mismatch — decide which to keep
+                    if field in PREFER_PAGE_4 and alt_pg == 4:
+                        updated[field] = alt_str
+                        corrections += 1
+                        print(f"  {field}: MISMATCH p{cur_pg}=\"{cur_val}\" vs p{alt_pg}=\"{alt_val}\" → using p{alt_pg} (hospital)")
+                    elif field in PREFER_PAGE_4 and cur_pg == 4:
+                        # Already have p4's value, keep it
+                        print(f"  {field}: MISMATCH p{cur_pg}=\"{cur_val}\" vs p{alt_pg}=\"{alt_val}\" → keeping p{cur_pg} (hospital)")
+                    else:
+                        # For other fields, keep the primary extraction
+                        print(f"  {field}: MISMATCH p{cur_pg}=\"{cur_val}\" vs p{alt_pg}=\"{alt_val}\" → keeping p{cur_pg}")
+            except Exception as e:
+                print(f"  {field}: cross-page error — {e}")
+
+    elapsed = time.time() - t0
+    print(f"  Pass 5 done in {elapsed:.1f}s ({corrections} corrections, {total_tokens} tokens)")
+    return updated, elapsed
+
+
+# ---------------------------------------------------------------------------
+# Pass 6: Normalization and final output
 # ---------------------------------------------------------------------------
 
 NULL_LIKE = {"null", "none", "n/a", "na", "[]", "[ ]", "n.a.", "-", "--", ""}
 
 
-def pass5_normalize(extracted):
+def pass6_normalize(extracted):
     """Normalize extracted data into clean final output."""
-    print("[Pass 5] Python → Normalization...")
+    print("[Pass 6] Python → Normalization...")
     t0 = time.time()
     result = {}
 
@@ -569,7 +802,7 @@ def pass5_normalize(extracted):
     elapsed = time.time() - t0
     non_null = sum(1 for v in result.values() if v is not None)
     print(f"  Normalized {len(result)} fields ({non_null} non-null)")
-    print(f"  Pass 5 done in {elapsed:.1f}s")
+    print(f"  Pass 6 done in {elapsed:.1f}s")
     return result, elapsed
 
 
@@ -578,10 +811,10 @@ def pass5_normalize(extracted):
 # ---------------------------------------------------------------------------
 
 def run_pipeline(pdf_path):
-    """Execute the full 5-pass pipeline and return results dict."""
+    """Execute the full 6-pass pipeline and return results dict."""
     print("=" * 60)
-    print("  ADE PIPELINE v2 — Single Qwen2.5-VL")
-    print("  (replaces OlmOCR + Qwen dual-model setup)")
+    print("  ADE PIPELINE v2 — Single Qwen2.5-VL (Agentic)")
+    print("  6-pass: render → extract → validate → agentic → xpage → norm")
     print("=" * 60)
     print(f"  PDF: {pdf_path}")
     print(f"  Model: {MODEL_NAME}")
@@ -596,32 +829,36 @@ def run_pipeline(pdf_path):
         print("ERROR: No pages rendered from PDF")
         sys.exit(1)
 
-    # Pass 2: Vision extraction per page
+    # Pass 2: Vision extraction per page (parallel)
     extracted, t2 = pass2_extract(page_images, PAGE_FIELD_MAP)
 
     # Pass 3: Deterministic validation
     failures, t3 = pass3_validate(extracted)
 
-    # Pass 4: Targeted re-extraction of failed fields
-    extracted, t4 = pass4_reextract(failures, extracted, page_images, PAGE_FIELD_MAP)
+    # Pass 4: Agentic re-extraction (strategy per field type + voting)
+    extracted, t4 = pass4_agentic(failures, extracted, page_images, PAGE_FIELD_MAP)
 
-    # Pass 5: Normalization
-    final_data, t5 = pass5_normalize(extracted)
+    # Pass 5: Cross-page consistency
+    extracted, t5 = pass5_cross_page(extracted, page_images, PAGE_FIELD_MAP)
+
+    # Pass 6: Normalization
+    final_data, t6 = pass6_normalize(extracted)
 
     total_time = time.time() - total_start
 
     # Build output compatible with check_accuracy.py (values appear in text)
     output = {
         "document": pdf_path.split("/")[-1] if "/" in pdf_path else pdf_path,
-        "pipeline": "qwen_vl_single_model_v2",
+        "pipeline": "qwen_vl_single_model_v2_agentic",
         "model": MODEL_NAME,
         "structured_data": final_data,
         "timing": {
             "pass1_render_seconds": round(t1, 2),
             "pass2_extract_seconds": round(t2, 2),
             "pass3_validate_seconds": round(t3, 2),
-            "pass4_reextract_seconds": round(t4, 2),
-            "pass5_normalize_seconds": round(t5, 2),
+            "pass4_agentic_seconds": round(t4, 2),
+            "pass5_crosspage_seconds": round(t5, 2),
+            "pass6_normalize_seconds": round(t6, 2),
             "total_seconds": round(total_time, 2),
         },
         "pages_processed": len(page_images),
@@ -666,8 +903,9 @@ def main():
         f"(render: {timing['pass1_render_seconds']:.1f}s + "
         f"extract: {timing['pass2_extract_seconds']:.1f}s + "
         f"validate: {timing['pass3_validate_seconds']:.1f}s + "
-        f"re-extract: {timing['pass4_reextract_seconds']:.1f}s + "
-        f"normalize: {timing['pass5_normalize_seconds']:.1f}s)"
+        f"agentic: {timing['pass4_agentic_seconds']:.1f}s + "
+        f"xpage: {timing['pass5_crosspage_seconds']:.1f}s + "
+        f"normalize: {timing['pass6_normalize_seconds']:.1f}s)"
     )
 
 
